@@ -1,0 +1,174 @@
+ pipeline {
+     agent any
+     environment {
+         NETLIFY_SITE_ID= 'aeed8e6a-13c5-4dfd-a92c-e1a4087701b9'
+         NETLIFY_AUTH_TOKEN = credentials('netlify-token')
+     }
+     stages {
+         stage('Build') {
+             agent {
+                 docker {
+                     image 'node:22.13.1-alpine3.21'
+                     reuseNode true
+                 }
+             }
+             steps {
+                 sh '''
+                 ls -al
+                 node --version
+                 npm --version
+                 npm ci
+                 npm run build
+                 ls -al
+                 '''
+             }
+         }
+
+         stage("All Tests"){
+             parallel{
+                 stage('Test'){
+                     agent {
+                         docker {
+                             image 'node:22.13.1-alpine3.21'
+                             reuseNode true
+                         }
+                     }
+                     steps {
+                         sh '''
+                         if [ -f build/index.html ]; then
+                             npm test
+                         else
+                         echo 'not exit'
+                         fi
+                         '''
+                     }
+                     post {
+                         always {
+                             junit 'jest-results/junit.xml'
+                         }
+                     }
+                 }
+
+                 stage('E2E'){
+                     agent {
+                         docker {
+                             image 'mcr.microsoft.com/playwright:v1.39.0-jammy'
+                             reuseNode true
+                         }
+                     }
+
+                     steps {
+                         sh '''
+                         npm install serve
+                         node_modules/.bin/serve -s build &
+                         sleep 10
+                         npx playwright test --reporter=html
+                         '''
+                     }
+                     post {
+                         always {
+                             publishHTML([allowMissing: false, alwaysLinkToLastBuild: false, keepAll: false, reportDir: 'playwright-report', reportFiles: 'index.html', reportName: 'Playwright local Report', reportTitles: '', useWrapperFileDirectly: true])
+                         }
+                     }
+                 }
+             }
+         }
+
+          stage('Deploye To Stagging') {
+             agent {
+                 docker {
+                     image 'node:22.13.1-alpine3.21'
+                     reuseNode true
+                 }
+             }
+             steps {
+                 sh '''
+                     npm install netlify-cli node-jq
+                     node_modules/.bin/netlify --version
+                     node_modules/.bin/netlify status
+                     node_modules/.bin/netlify deploy --dir=build --json > deploy-output.json
+                     node_modules/.bin/node-jq -r ".deploy_url" deploy-output.json
+                 '''
+                 script { 
+                     env.STAGING_URL = sh(script:" node_modules/.bin/node-jq -r '.deploy_url' deploy-output.json", returnStdout: true)
+                 }
+             }
+            
+         }
+
+         stage('Staging E2E'){
+             environment {
+                 CI_ENVIRONMENT_URL = "https:my-own-testing-projects.netlify.app"
+             }
+             agent {
+                 docker {
+                     image 'mcr.microsoft.com/playwright:v1.39.0-jammy'
+                     reuseNode true
+                 }
+             }
+             steps {
+                 sh '''
+                 npx playwright test --reporter=html
+                 '''
+             }
+             post {
+                 always {
+                     publishHTML([allowMissing: false, alwaysLinkToLastBuild: false, keepAll: false, reportDir: 'playwright-report', reportFiles: 'index.html', reportName: 'Playwright Prod', reportTitles: '', useWrapperFileDirectly: true])
+                 }
+             }
+         }
+
+         stage("Approval"){
+             steps {
+                 timeout(time: 15, unit: 'MINUTES') {
+                     input message: 'Do you want to deploye?', ok: 'Yes, i am sure to deploye'
+                 }         
+             }
+         }
+
+         stage('Deploye To Production') {
+             agent {
+                 docker {
+                     image 'node:22.13.1-alpine3.21'
+                     reuseNode true
+                 }
+             }
+             steps {
+                 sh '''
+                npm install netlify-cli
+                node_modules/.bin/netlify --version
+                 node_modules/.bin/netlify status
+                 node_modules/.bin/netlify deploy --dir=build --prod
+
+                 '''
+             }
+         }
+
+         stage('Prod E2E'){
+
+             environment {
+                 CI_ENVIRONMENT_URL = "https:my-own-testing-projects.netlify.app"
+             }
+             agent {
+                 docker {
+                     image 'mcr.microsoft.com/playwright:v1.39.0-jammy'
+                     reuseNode true
+                 }
+             }
+
+             steps {
+                 sh '''
+                 npx playwright test --reporter=html
+                 '''
+             }
+             post {
+                 always {
+                     publishHTML([allowMissing: false, alwaysLinkToLastBuild: false, keepAll: false, reportDir: 'playwright-report', reportFiles: 'index.html', reportName: 'Playwright Prod', reportTitles: '', useWrapperFileDirectly: true])
+                 }
+             }
+         }
+
+     }
+
+    
+ }
