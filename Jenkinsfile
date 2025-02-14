@@ -14,7 +14,9 @@ pipeline {
                     ls -la
                     node --version
                     npm --version
+                    echo 'Create node_modules folder'
                     npm ci
+                    echo 'Create Build folder'
                     npm run build
                     ls -la
                 '''
